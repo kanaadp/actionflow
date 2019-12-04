@@ -138,12 +138,12 @@ int main(int argc, char *argv[])
     	cout << "Error opening video stream or file" << endl;
     	return -1;
   	}
-	cap.set(CV_CAP_PROP_FRAME_WIDTH,1280);
-	cap.set(CV_CAP_PROP_FRAME_HEIGHT,720);
+	cap.set(CAP_PROP_FRAME_WIDTH,1280);
+	cap.set(CAP_PROP_FRAME_HEIGHT,720);
   	int frame_width = int(cap.get(3)); 
   	int frame_height = int(cap.get(4)); 
 	cout << "!!!!!!!" <<frame_width << frame_height << endl;
-	VideoWriter video("outcpp.avi",CV_FOURCC('M','J','P','G'),10, Size(frame_width,frame_height));
+	VideoWriter video("outcpp.avi",cv::VideoWriter::fourcc('M','J','P','G'),10, Size(frame_width,frame_height));
 	int time = 0;
   	// Define the codec and create VideoWriter object.The output is stored in 'outcpp.avi' file. 
   	// VideoWriter video("outcpp.mov", CAP_OPENCV_MJPEG, 10, Size(frame_width,frame_height)); 
