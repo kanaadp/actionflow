@@ -30,15 +30,22 @@
 #include "std_msgs/String.h"
 
 #include <actionflow/pos.h>
+#include <actionflow/frame.h>
 
 /**
  * This tutorial demonstrates simple receipt of messages over the ROS system.
  */
 // %Tag(CALLBACK)%
-void chatterCallback(const actionflow::pos &msg) {
-  ROS_INFO("Pos %d @ [%f, %f] with heading: %f, vel: %f", msg.id,
-           msg.x_pos, msg.y_pos, msg.vel,
-           msg.heading);
+void chatterCallback(const actionflow::frame &msg) {
+  actionflow::pos robot_pos = msg.robot_pos;
+  ROS_INFO("Robot pos %d @ [%f, %f] with heading: %f, vel: %f", robot_pos.id,
+           robot_pos.x_pos, robot_pos.y_pos, robot_pos.vel,
+           robot_pos.heading);
+  actionflow::pos obstacle_pos = msg.obstacle_poses[0];
+  ROS_INFO("Obstacle 0 Pos %d @ [%f, %f] with heading: %f, vel: %f", obstacle_pos.id,
+           obstacle_pos.x_pos, obstacle_pos.y_pos, obstacle_pos.vel,
+           obstacle_pos.heading);
+
 }
 // %EndTag(CALLBACK)%
 

@@ -26,13 +26,17 @@
 #include <sstream>
 #include <stdio.h>
 
+#include <actionflow/frame.h>
 #include <actionflow/pos.h>
 
 using namespace std;
 using namespace cv;
 
-static const float FLOOR_WIDTH_M = 3.5; // measure these more accurately!
-static const float FLOOR_LENGTH_M = 1.5;
+static const int FLOOR_WIDTH_PIX = 1080;
+static const int FLOOR_LENGTH_PIX = 720;
+
+static const float FLOOR_WIDTH_M = 3.0;
+static const float FLOOR_LENGTH_M = 2.0;
 
 static void help() {
   cout << "--------------------------------------------------------------------"
@@ -41,7 +45,7 @@ static void help() {
        << "This script locates the robot and obstacles via open CV," << endl
        << " and publishes their positions." << endl
        << "Usage:" << endl
-       << "./local (1 + num_obstacles) camera_index refresh_rate" << endl
+       << "./local num_obstacles camera_index refresh_rate" << endl
        << "--------------------------------------------------------------------"
           "------"
        << endl
@@ -59,7 +63,7 @@ static Mat unwarp(Mat input, Point2f *inputQuad) {
   Mat lambda(2, 4, CV_32FC1);
 
   // Set the lambda matrix the same type and size as input
-  lambda = Mat::zeros(input.rows, input.cols, input.type());
+  lambda = Mat::zeros(FLOOR_WIDTH_PIX, FLOOR_LENGTH_PIX, input.type());
 
   // The 4 points that select quadilateral on the input , from top-left in
   // clockwise order These four pts are the sides of the rect box used as input
@@ -67,9 +71,9 @@ static Mat unwarp(Mat input, Point2f *inputQuad) {
   // The 4 points where the mapping is to be done , from top-left in clockwise
   // order
   outputQuad[0] = Point2f(0, 0);
-  outputQuad[1] = Point2f(input.rows - 1, 0);
-  outputQuad[2] = Point2f(input.rows - 1, input.rows - 1);
-  outputQuad[3] = Point2f(0, input.rows - 1);
+  outputQuad[1] = Point2f(FLOOR_WIDTH_PIX - 1, 0);
+  outputQuad[2] = Point2f(FLOOR_WIDTH_PIX - 1, FLOOR_LENGTH_PIX - 1);
+  outputQuad[3] = Point2f(0, FLOOR_LENGTH_PIX - 1);
 
   // Get the Perspective Transform Matrix i.e. lambda
   lambda = getPerspectiveTransform(inputQuad, outputQuad);
@@ -119,33 +123,78 @@ float orientation(Point p1, Point p2, float &v) {
 const int max_value_H = 360 / 2;
 const int max_value = 255;
 const String window_detection_name = "Object Detection";
-int low_H = 40, low_S = 50, low_V = 150;
-int high_H = 60, high_S = 100, high_V = 255;
+int robot_low_H = 64, robot_low_S = 0, robot_low_V = 237;
+int robot_high_H = 83, robot_high_S = 48, robot_high_V = 255;
+
+int obstacle_low_H = 40, obstacle_low_S = 50, obstacle_low_V = 150;
+int obstacle_high_H = 60, obstacle_high_S = 100, obstacle_high_V = 255;
 
 // inRange(frame_HSV, Scalar(36, 105, 25), Scalar(86, 220, 220), mask_BGR);
 static void on_low_H_thresh_trackbar(int, void *) {
-  low_H = min(high_H - 1, low_H);
-  setTrackbarPos("Low H", window_detection_name, low_H);
+  robot_low_H = min(robot_high_H - 1, robot_low_H);
+  setTrackbarPos("Low H", window_detection_name, robot_low_H);
 }
 static void on_high_H_thresh_trackbar(int, void *) {
-  high_H = max(high_H, low_H + 1);
-  setTrackbarPos("High H", window_detection_name, high_H);
+  robot_high_H = max(robot_high_H, robot_low_H + 1);
+  setTrackbarPos("High H", window_detection_name, robot_high_H);
 }
 static void on_low_S_thresh_trackbar(int, void *) {
-  low_S = min(high_S - 1, low_S);
-  setTrackbarPos("Low S", window_detection_name, low_S);
+  robot_low_S = min(robot_high_S - 1, robot_low_S);
+  setTrackbarPos("Low S", window_detection_name, robot_low_S);
 }
 static void on_high_S_thresh_trackbar(int, void *) {
-  high_S = max(high_S, low_S + 1);
-  setTrackbarPos("High S", window_detection_name, high_S);
+  robot_high_S = max(robot_high_S, robot_low_S + 1);
+  setTrackbarPos("High S", window_detection_name, robot_high_S);
 }
 static void on_low_V_thresh_trackbar(int, void *) {
-  low_V = min(high_V - 1, low_V);
-  setTrackbarPos("Low V", window_detection_name, low_V);
+  robot_low_V = min(robot_high_V - 1, robot_low_V);
+  setTrackbarPos("Low V", window_detection_name, robot_low_V);
 }
 static void on_high_V_thresh_trackbar(int, void *) {
-  high_V = max(high_V, low_V + 1);
-  setTrackbarPos("High V", window_detection_name, high_V);
+  robot_high_V = max(robot_high_V, robot_low_V + 1);
+  setTrackbarPos("High V", window_detection_name, robot_high_V);
+}
+
+static bool cluster_points(const Mat &frame_HSV, int num_objs, const Mat &mask,
+                           Mat &centers, bool show_image) {
+
+  int attempts = 5;
+  try {
+    // Apply threshold
+    Mat result_BGR, labels;
+    Mat erode_frame, dilate_frame, gray_frame, b_frame;
+
+    bitwise_and(frame_HSV, frame_HSV, result_BGR, mask);
+
+    if (show_image && !result_BGR.empty()) {
+      imshow(window_detection_name, result_BGR);
+    }
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(2 * 1 + 1, 2 * 1 + 1),
+                                       Point(1, 1));
+
+    erode(result_BGR, erode_frame, kernel);
+    dilate(erode_frame, dilate_frame, kernel);
+    cvtColor(dilate_frame, gray_frame, COLOR_BGR2GRAY);
+    threshold(gray_frame, b_frame, 0, 255.0, THRESH_BINARY);
+
+    Mat locations; // output, locations of non-zero pixels
+    findNonZero(b_frame, locations);
+    Mat locations_mat(locations.rows, 2, CV_32F);
+    for (int i = 0; i < locations.rows; i++) {
+      locations_mat.at<float>(i, 0) = locations.at<Point>(i).x;
+      locations_mat.at<float>(i, 1) = locations.at<Point>(i).y;
+    }
+
+    locations_mat.convertTo(locations_mat, CV_32F);
+
+    kmeans(locations_mat, num_objs, labels,
+           TermCriteria(cv::TermCriteria::MAX_ITER + cv::TermCriteria::EPS,
+                        10000, 0.0001),
+           attempts, KMEANS_PP_CENTERS, centers);
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -158,7 +207,7 @@ int main(int argc, char *argv[]) {
   ROS_INFO("Got parameter : %s", param.c_str());
   ros::Time timeros = ros::Time::now();
   ros::Rate loop_rate(atoi(argv[3]));
-  ros::Publisher pos_pub = nh.advertise<actionflow::pos>("robot_pos", 1000);
+  ros::Publisher pos_pub = nh.advertise<actionflow::frame>("robot_pos", 1000);
   // 定义节点句柄
   image_transport::ImageTransport it(nh);
   image_transport::Publisher pub = it.advertise("video_image_complete", 1);
@@ -166,8 +215,8 @@ int main(int argc, char *argv[]) {
 
   image_transport::Publisher pub_unwrap = it.advertise("video_image_unwrap", 1);
   sensor_msgs::ImagePtr msgPicture_unwrap;
-  const int N_CARS = atoi(argv[1]);
-  vector<vector<Point>> array_vec(N_CARS);
+  const int num_obstacles = atoi(argv[1]);
+  vector<vector<Point>> ob_centers_by_time(num_obstacles);
   Scalar color_map[14] = {
       Scalar(0, 0, 0),     Scalar(0, 0, 127),    Scalar(0, 147, 0),
       Scalar(255, 0, 0),   Scalar(127, 0, 0),    Scalar(156, 0, 156),
@@ -187,6 +236,7 @@ int main(int argc, char *argv[]) {
   cap.set(CAP_PROP_FRAME_HEIGHT, 720);
   int frame_width = int(cap.get(3));
   int frame_height = int(cap.get(4));
+
   cout << "Cap frame of size: " << frame_width << ", " << frame_height << endl;
   // Define the codec and create VideoWriter object.The output is stored in
   // 'outcpp.avi' file. VideoWriter video("outcpp.mov", CAP_OPENCV_MJPEG, 10,
@@ -200,21 +250,21 @@ int main(int argc, char *argv[]) {
   Mat hsv;
   namedWindow(window_detection_name);
   // Trackbars to set thresholds for HSV values
-  createTrackbar("Low H", window_detection_name, &low_H, max_value_H,
+  createTrackbar("Low H", window_detection_name, &robot_low_H, max_value_H,
                  on_low_H_thresh_trackbar);
-  createTrackbar("High H", window_detection_name, &high_H, max_value_H,
+  createTrackbar("High H", window_detection_name, &robot_high_H, max_value_H,
                  on_high_H_thresh_trackbar);
-  createTrackbar("Low S", window_detection_name, &low_S, max_value,
+  createTrackbar("Low S", window_detection_name, &robot_low_S, max_value,
                  on_low_S_thresh_trackbar);
-  createTrackbar("High S", window_detection_name, &high_S, max_value,
+  createTrackbar("High S", window_detection_name, &robot_high_S, max_value,
                  on_high_S_thresh_trackbar);
-  createTrackbar("Low V", window_detection_name, &low_V, max_value,
+  createTrackbar("Low V", window_detection_name, &robot_low_V, max_value,
                  on_low_V_thresh_trackbar);
-  createTrackbar("High V", window_detection_name, &high_V, max_value,
+  createTrackbar("High V", window_detection_name, &robot_high_V, max_value,
                  on_high_V_thresh_trackbar);
 
   while (1) {
-    cout << "Frame itr: " << numf << "\n" << endl;
+    cout << "Frame itr: " << numf << endl;
     ++numf;
     Mat frame; // Capture frame-by-frame
     cap >> frame;
@@ -302,119 +352,117 @@ int main(int argc, char *argv[]) {
       break;
     // Calibrate the image
     frame = unwarp(frame, inputQuad);
-    // Apply threshold
-    Mat frame_HSV, mask_BGR, result_BGR;
-    Mat erode_frame, dilate_frame, gray_frame, b_frame;
+
+    cout << frame.size() << endl;
+
+    Mat frame_HSV, robot_mask, obstacle_mask;
+    Mat robot_pos, curr_obstacle_poses;
+
     // Convert from BGR to HSV colorspace
     cvtColor(frame, frame_HSV, COLOR_BGR2HSV);
     // Detect the object based on HSV Range Value
-    inRange(frame_HSV, Scalar(low_H, low_S, low_V),
-            Scalar(high_H, high_S, high_V), mask_BGR);
+    inRange(frame_HSV, Scalar(robot_low_H, robot_low_S, robot_low_V),
+            Scalar(robot_high_H, robot_high_S, robot_high_V), robot_mask);
 
-    bitwise_and(frame_HSV, frame_HSV, result_BGR, mask_BGR);
+    inRange(frame_HSV, Scalar(obstacle_low_H, obstacle_low_S, obstacle_low_V),
+            Scalar(obstacle_high_H, obstacle_high_S, obstacle_high_V),
+            obstacle_mask);
 
-    if (!result_BGR.empty()) {
-      imshow(window_detection_name, result_BGR);
+    // const Mat &frame, int num_objs, Mat &centers
+    bool clustered_robot =
+        cluster_points(frame_HSV, 1, robot_mask, robot_pos, true);
+
+    bool clustered_obstacles = false;
+    if (num_obstacles != 0) {
+      clustered_obstacles = cluster_points(
+          frame_HSV, num_obstacles, obstacle_mask, curr_obstacle_poses, false);
+    }
+
+    actionflow::frame frame_obs;
+    if (!clustered_robot) {
+      cout << "Could not cluster robot points on this frame!" << endl;
     } else {
-      cout << "Result_BGR is empty!" << endl;
+      frame_obs.robot_pos.x_pos =
+          robot_pos.ptr<float>(0)[0] * FLOOR_WIDTH_M / FLOOR_WIDTH_PIX;
+      frame_obs.robot_pos.y_pos =
+          robot_pos.ptr<float>(0)[1] * FLOOR_LENGTH_M / FLOOR_LENGTH_PIX;
+
+      Point robot_center =
+          Point(robot_pos.ptr<float>(0)[0], robot_pos.ptr<float>(0)[1]);
+
+      circle(frame, robot_center, 20, color_map[0], 6);
+      std::stringstream ss;
+      ss << "R:"
+         << "," << round(frame_obs.robot_pos.x_pos * 100) / 100 << ","
+         << round(frame_obs.robot_pos.y_pos * 100) / 100;
+      string pos_string = ss.str();
+      putText(frame, pos_string, robot_center, FONT_HERSHEY_DUPLEX, 1,
+              Scalar(0, 0, 0), 2);
     }
-    Mat kernel = getStructuringElement(MORPH_RECT, Size(2 * 1 + 1, 2 * 1 + 1),
-                                       Point(1, 1));
-
-    erode(result_BGR, erode_frame, kernel);
-    dilate(erode_frame, dilate_frame, kernel);
-    cvtColor(dilate_frame, gray_frame, COLOR_BGR2GRAY);
-    threshold(gray_frame, b_frame, 0, 255.0, THRESH_BINARY);
-
-    Mat locations; // output, locations of non-zero pixels
-    findNonZero(b_frame, locations);
-    Mat locations_mat(locations.rows, 2, CV_32F);
-    for (int i = 0; i < locations.rows; i++) {
-      locations_mat.at<float>(i, 0) = locations.at<Point>(i).x;
-      locations_mat.at<float>(i, 1) = locations.at<Point>(i).y;
-    }
-
-    int clusterCount = N_CARS;
-    Mat labels;
-    int attempts = 5;
-    Mat centers;
-    locations_mat.convertTo(locations_mat, CV_32F);
-    try {
-      kmeans(locations_mat, clusterCount, labels,
-             TermCriteria(cv::TermCriteria::MAX_ITER + cv::TermCriteria::EPS,
-                          10000, 0.0001),
-             attempts, KMEANS_PP_CENTERS, centers);
-      vector<Point> vector_centers;
-
-      for (int i = 0; i < centers.rows; i++) {
-        const float *Mi = centers.ptr<float>(i);
+    if (!clustered_obstacles) {
+      cout << "Did not cluster any obstacles!" << endl;
+    } else {
+      vector<Point> cur_obstacle_centers;
+      for (int i = 0; i < curr_obstacle_poses.rows; i++) {
+        const float *Mi = curr_obstacle_poses.ptr<float>(i);
         Point center = Point(Mi[0], Mi[1]);
-        vector_centers.push_back(center);
+        cur_obstacle_centers.push_back(center);
       }
 
-      if (array_vec[0].size() == 0) {
+      if (ob_centers_by_time[0].size() == 0) {
         // nearest neighbor for finding velocity
-        for (int i = 0; i < centers.rows; i++) {
-          const float *Mi_ = centers.ptr<float>(i);
+        for (int i = 0; i < curr_obstacle_poses.rows; i++) {
+          const float *Mi_ = curr_obstacle_poses.ptr<float>(i);
           Point center = Point(Mi_[0], Mi_[1]);
-          array_vec[i].push_back(center);
+          ob_centers_by_time[i].push_back(center);
         }
       } else {
-        for (int i = 0; i < centers.rows; i++) {
-          const float *Mi_ = centers.ptr<float>(i);
-          Point closest = get_closest(array_vec[i].back(), vector_centers);
+        for (int i = 0; i < curr_obstacle_poses.rows; i++) {
+          // for each of the centers from the previous step,
+          // Greedily pick the closest center, and delete it from the list
+          // why not just use hungarian matching
+          const float *Mi_ = curr_obstacle_poses.ptr<float>(i);
+          Point closest =
+              get_closest(ob_centers_by_time[i].back(), cur_obstacle_centers);
 
           float v = 0.0; // velocity
-          float o = orientation(array_vec[i].back(), closest, v);
+          float o = orientation(ob_centers_by_time[i].back(), closest, v);
           float theta = atan(o); // heading
 
-          vector_centers.erase(
-              std::find(vector_centers.begin(), vector_centers.end(), closest));
-          array_vec[i].push_back(closest);
-          circle(frame, array_vec[i].back(), 20, color_map[i], 5);
+          cur_obstacle_centers.erase(std::find(cur_obstacle_centers.begin(),
+                                               cur_obstacle_centers.end(),
+                                               closest));
+          ob_centers_by_time[i].push_back(closest);
 
           float x_out, y_out, s_pass;
 
           // scale and shift x and y
-          x_out = (244 + array_vec[i].back().x - 300) / 304.0 - 1;
-          y_out = (365 + 320 - array_vec[i].back().y) / 323.0 - 1;
+          x_out =
+              ob_centers_by_time[i].back().x * FLOOR_WIDTH_M / FLOOR_WIDTH_PIX;
+          y_out = ob_centers_by_time[i].back().y * FLOOR_LENGTH_M /
+                  FLOOR_LENGTH_PIX;
 
-          // s_pass = atan2(abs(y_out),x_out) * radius;
-          // if (y_out >= 0){;}
-          // else{s_pass = 2 * 3.14159265 - s_pass;}
-
-          // s_pass = round(s_pass * 100.0)/100;
-          // string s(to_string(s_pass));
-
-          // string pos_string()
-          // std::stringstream ss_pass;
-
-          // ss_pass << std::setprecision(2)<<s_pass;
-          // s = ss_pass.str();
-
+          circle(frame, ob_centers_by_time[i].back(), 20, color_map[i + 1], 5);
           std::stringstream ss;
-          ss << i + 1 << "," << round(x_out * 100.0) / 100 << ","
-             << round(y_out * 100.0) / 100 << ",";
+          ss << i + 1 << ":" << round(x_out * 100.0) / 100 << ","
+             << round(y_out * 100.0) / 100;
           string pos_string = ss.str();
-          cout << "pos_string: " << pos_string << endl;
-          putText(frame, pos_string, array_vec[i].back(), FONT_HERSHEY_DUPLEX,
-                  1, Scalar(0, 0, 0), 2);
+          putText(frame, pos_string, ob_centers_by_time[i].back(),
+                  FONT_HERSHEY_DUPLEX, 1, Scalar(0, 0, 0), 2);
+
           actionflow::pos pos_msg;
           pos_msg.id = i;
           pos_msg.x_pos = x_out;
           pos_msg.y_pos = y_out;
-          pos_msg.vel = v;
-          pos_msg.heading = theta;
+          // pos_msg.vel = v;
+          // pos_msg.heading = theta;
 
-          // ROS_INFO("%s", pos_msg.c_str());
-
-          pos_pub.publish(pos_msg);
-          ros::spinOnce();
+          frame_obs.obstacle_poses.push_back(pos_msg);
         }
       }
-    } catch (...) {
     }
-
+    pos_pub.publish(frame_obs);
+    ros::spinOnce();
     msgPicture =
         cv_bridge::CvImage(std_msgs::Header(), "bgr8", frame).toImageMsg();
     pub.publish(msgPicture);
